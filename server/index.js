@@ -22,7 +22,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL });
 });
 
-// One request in, one answer out (no streaming yet - that is Day 2).
+// Stream Gemini's response to the browser chunk by chunk.
 app.post("/api/chat", async (req, res) => {
   const message = req.body?.message;
 
@@ -32,27 +32,33 @@ app.post("/api/chat", async (req, res) => {
       .json({ error: 'Please send a non-empty "message" string.' });
   }
   if (message.length > MAX_MESSAGE_LENGTH) {
-    return res
-      .status(400)
-      .json({
-        error: `Message is too long (max ${MAX_MESSAGE_LENGTH} characters).`,
-      });
+    return res.status(400).json({
+      error: `Message is too long (max ${MAX_MESSAGE_LENGTH} characters).`,
+    });
   }
 
   try {
-    const response = await ai.models.generateContent({
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    const stream = await ai.models.generateContentStream({
       model: MODEL,
       contents: message,
     });
-    res.json({ reply: response.text ?? "" });
+
+    for await (const chunk of stream) {
+      const text = chunk.text ?? "";
+      console.log(text);
+      res.write(text);
+    }
+
+    res.end();
+
+    // res.json({ reply: response.text ?? "" });
   } catch (err) {
     // Log the real error on the server; send the browser a safe, generic message.
     console.error("Gemini request failed:", err);
-    res
-      .status(502)
-      .json({
-        error: "The AI service request failed. Check the server console.",
-      });
+    res.status(502).json({
+      error: "The AI service request failed. Check the server console.",
+    });
   }
 });
 

@@ -52,3 +52,6 @@ Open the URL Vite prints (usually http://localhost:5173), type a question, click
 - Error in the page / 502 - read the server terminal; usually a wrong key, a model name that is not
   available to you (change `GEMINI_MODEL` in `.env`), or the free-tier rate limit.
 - Page cannot reach /api - make sure the server is running on port 3001.
+
+- <img width="1202" height="718" alt="Screenshot 2026-10-05 134739" src="https://github.com/user-attachments/assets/9c21c92a-f3ce-41aa-b870-447a66096aa2" />
+

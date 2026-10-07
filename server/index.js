@@ -1,7 +1,8 @@
 // Tiny Express server. The Gemini API key lives ONLY here (in .env), never in the browser.
 import "dotenv/config";
 import express from "express";
-import { GoogleGenAI } from "@google/genai";
+import { streamText, convertToModelMessages } from "ai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 
 const PORT = process.env.PORT || 3001;
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
@@ -14,51 +15,64 @@ if (!process.env.GEMINI_API_KEY) {
   process.exit(1);
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Pass the key explicitly so we can keep using GEMINI_API_KEY as the env var name.
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL });
 });
 
+// Returns the combined text of the latest user message (used for length validation).
+function lastUserText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role === "user") {
+      return (m.parts ?? [])
+        .filter((p) => p?.type === "text")
+        .map((p) => p.text ?? "")
+        .join("");
+    }
+  }
+  return "";
+}
+
 // Stream Gemini's response to the browser chunk by chunk.
 app.post("/api/chat", async (req, res) => {
-  const message = req.body?.message;
-
-  if (typeof message !== "string" || message.trim() === "") {
-    return res
-      .status(400)
-      .json({ error: 'Please send a non-empty "message" string.' });
-  }
-  if (message.length > MAX_MESSAGE_LENGTH) {
-    return res.status(400).json({
-      error: `Message is too long (max ${MAX_MESSAGE_LENGTH} characters).`,
-    });
-  }
-
   try {
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    const stream = await ai.models.generateContentStream({
-      model: MODEL,
-      contents: message,
-    });
+    const { messages } = req.body ?? {};
 
-    for await (const chunk of stream) {
-      const text = chunk.text ?? "";
-      console.log(text);
-      res.write(text);
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "messages must be a non-empty array" });
     }
 
-    res.end();
+    if (lastUserText(messages).length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({
+        error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters).`,
+      });
+    }
 
-    // res.json({ reply: response.text ?? "" });
-  } catch (err) {
-    // Log the real error on the server; send the browser a safe, generic message.
-    console.error("Gemini request failed:", err);
-    res.status(502).json({
-      error: "The AI service request failed. Check the server console.",
+    // UI messages (from useChat) -> model messages (for streamText)
+    const modelMessages = await convertToModelMessages(messages);
+
+    const result = streamText({
+      model: google(MODEL),
+      messages: modelMessages, // must be `messages`, not `modelMessages`
     });
+
+    result.pipeUIMessageStreamToResponse(res);
+  } catch (error) {
+    console.error("Gemini request failed:", error);
+
+    if (!res.headersSent) {
+      res.status(502).json({ error: "The AI service request failed." });
+    }
   }
 });
 

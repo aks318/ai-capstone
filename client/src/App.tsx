@@ -1,132 +1,88 @@
-import { FormEvent, useRef, useState } from "react";
+import { useChat } from "@ai-sdk/react";
+import { useEffect, useRef, useState } from "react";
+
+const MAX_MESSAGE_LENGTH = 2000;
 
 export default function App() {
-  const [message, setMessage] = useState("");
-  const [reply, setReply] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [input, setInput] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Stores the controller so the Stop button can access it
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Posts to /api/chat by default.
+  const { messages, sendMessage, status, error, stop } = useChat();
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
+  const isBusy = status === "submitted" || status === "streaming";
 
-    const text = message.trim();
+  // Keep the newest message in view.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, status]);
 
-    if (!text || loading) return;
+  async function submit() {
+    const text = input.trim();
 
-    setLoading(true);
-    setError("");
-    setReply("");
+    if (!text || isBusy) return;
 
-    // Create a new controller for this request
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    try {
-      // Calls OUR server, not the AI provider.
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error ?? `Request failed (${res.status})`);
-      }
-
-      if (!res.body) {
-        throw new Error("Response body is not available.");
-      }
-
-      // Get a reader for the response stream
-      const reader = res.body.getReader();
-
-      // Converts Uint8Array chunks into strings
-      const decoder = new TextDecoder();
-
-      let accumulatedReply = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        const chunk = decoder.decode(value, { stream: true });
-
-        accumulatedReply += chunk;
-
-        setReply(accumulatedReply);
-      }
-
-      // Flush any remaining decoded characters
-      const remaining = decoder.decode();
-
-      if (remaining) {
-        accumulatedReply += remaining;
-        setReply(accumulatedReply);
-      }
-    } catch (err) {
-      // AbortError means the user clicked Stop.
-      if (err instanceof Error && err.name === "AbortError") {
-        return;
-      }
-
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-      abortControllerRef.current = null;
-    }
+    setInput("");
+    await sendMessage({ text });
   }
 
-  function handleStop() {
-    abortControllerRef.current?.abort();
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    void submit();
+  }
+
+  // Enter sends, Shift+Enter inserts a newline.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void submit();
+    }
   }
 
   return (
     <main className="app">
-      <h1>AI Capstone - Day 2</h1>
+      <h1>AI Chat</h1>
 
-      <p className="hint">
-        Type a question. The response is streamed from the Express server.
-      </p>
+      <section className="messages">
+        {messages.map((message) => (
+          <div key={message.id} className={`message ${message.role}`}>
+            <strong>{message.role === "user" ? "You" : "AI"}</strong>
+
+            <div>
+              {message.parts.map((part, index) =>
+                part.type === "text" ? (
+                  <span key={index}>{part.text}</span>
+                ) : null,
+              )}
+            </div>
+          </div>
+        ))}
+
+        {status === "submitted" && <p className="thinking">Thinking...</p>}
+        <div ref={bottomRef} />
+      </section>
+
+      {error && <p className="error">{error.message}</p>}
 
       <form onSubmit={handleSubmit}>
         <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Ask something, e.g. Explain closures in JavaScript in 3 lines"
-          rows={4}
+          value={input}
+          maxLength={MAX_MESSAGE_LENGTH}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Ask something..."
         />
 
-        <button type="submit" disabled={loading || message.trim() === ""}>
-          {loading ? "Thinking..." : "Send"}
+        <button type="submit" disabled={isBusy || !input.trim()}>
+          Send
         </button>
 
-        {loading && (
-          <button type="button" onClick={handleStop}>
+        {isBusy && (
+          <button type="button" onClick={stop}>
             Stop
           </button>
         )}
       </form>
-
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-
-      {reply && (
-        <section className="reply" aria-live="polite">
-          <h2>Reply</h2>
-          <p>{reply}</p>
-        </section>
-      )}
     </main>
   );
 }

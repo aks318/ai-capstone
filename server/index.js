@@ -1,24 +1,96 @@
-// Tiny Express server. The Gemini API key lives ONLY here (in .env), never in the browser.
+// Express server with a filter_table tool. API keys live ONLY here (in .env).
 import "dotenv/config";
 import express from "express";
-import { streamText, convertToModelMessages } from "ai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { streamText, convertToModelMessages, tool, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
 
 const PORT = process.env.PORT || 3001;
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001"; // cheapest
 const MAX_MESSAGE_LENGTH = 2000;
 
-if (!process.env.GEMINI_API_KEY) {
-  console.error(
-    "Missing GEMINI_API_KEY. Copy .env.example to .env and add your key.",
-  );
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error("Missing ANTHROPIC_API_KEY. Add it to your .env file.");
   process.exit(1);
 }
 
-// Pass the key explicitly so we can keep using GEMINI_API_KEY as the env var name.
-const google = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
+// ---------- The data the tool works on (in-memory demo table) ----------
+
+const COLUMNS = ["name", "category", "price", "stock"];
+
+const PRODUCTS = [
+  { name: "Wireless Mouse", category: "accessories", price: 25, stock: 120 },
+  {
+    name: "Mechanical Keyboard",
+    category: "accessories",
+    price: 85,
+    stock: 40,
+  },
+  { name: "USB-C Hub", category: "accessories", price: 45, stock: 0 },
+  { name: "27-inch Monitor", category: "displays", price: 280, stock: 15 },
+  { name: "Portable Monitor", category: "displays", price: 150, stock: 8 },
+  { name: "Laptop Stand", category: "furniture", price: 35, stock: 60 },
+  { name: "Standing Desk", category: "furniture", price: 420, stock: 5 },
+  { name: "Office Chair", category: "furniture", price: 210, stock: 0 },
+  { name: "Webcam HD", category: "video", price: 60, stock: 33 },
+  { name: "Ring Light", category: "video", price: 30, stock: 75 },
+];
+
+const OPERATORS = {
+  equals: (cell, value) => String(cell).toLowerCase() === value.toLowerCase(),
+  contains: (cell, value) =>
+    String(cell).toLowerCase().includes(value.toLowerCase()),
+  gt: (cell, value) => Number(cell) > Number(value),
+  lt: (cell, value) => Number(cell) < Number(value),
+};
+
+// ---------- The tool ----------
+
+const filterTable = tool({
+  description:
+    "Filters the products table and returns the matching rows. " +
+    "Columns: name, category, price, stock. " +
+    "Use gt/lt only for the numeric columns price and stock.",
+  inputSchema: z.object({
+    column: z.enum(COLUMNS).describe("column to filter on"),
+    operator: z
+      .enum(["equals", "contains", "gt", "lt"])
+      .describe(
+        "equals/contains for text, gt (greater than)/lt (less than) for numbers",
+      ),
+    value: z
+      .string()
+      .describe("value to compare against, for example 'furniture' or '50'"),
+  }),
+  execute: async ({ column, operator, value }) => {
+    const isNumericOp = operator === "gt" || operator === "lt";
+
+    if (isNumericOp && !["price", "stock"].includes(column)) {
+      // Thrown errors reach the UI as an error state we can render.
+      throw new Error(
+        `"${operator}" only works on price or stock, not "${column}".`,
+      );
+    }
+    if (isNumericOp && Number.isNaN(Number(value))) {
+      throw new Error(`"${value}" is not a number.`);
+    }
+
+    const rows = PRODUCTS.filter((row) =>
+      OPERATORS[operator](row[column], value),
+    );
+
+    // This object becomes part.output in the browser.
+    return {
+      columns: COLUMNS,
+      rows,
+      filter: { column, operator, value },
+      total: PRODUCTS.length,
+      matched: rows.length,
+    };
+  },
 });
+
+// ---------- Server ----------
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -27,7 +99,6 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL });
 });
 
-// Returns the combined text of the latest user message (used for length validation).
 function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -41,7 +112,6 @@ function lastUserText(messages) {
   return "";
 }
 
-// Stream Gemini's response to the browser chunk by chunk.
 app.post("/api/chat", async (req, res) => {
   try {
     const { messages } = req.body ?? {};
@@ -51,25 +121,32 @@ app.post("/api/chat", async (req, res) => {
         .status(400)
         .json({ error: "messages must be a non-empty array" });
     }
-
     if (lastUserText(messages).length > MAX_MESSAGE_LENGTH) {
-      return res.status(400).json({
-        error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters).`,
-      });
+      return res
+        .status(400)
+        .json({
+          error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters).`,
+        });
     }
 
-    // UI messages (from useChat) -> model messages (for streamText)
     const modelMessages = await convertToModelMessages(messages);
 
     const result = streamText({
-      model: google(MODEL),
-      messages: modelMessages, // must be `messages`, not `modelMessages`
+      model: anthropic(MODEL), // provider function, not a plain string
+      system:
+        "You are a data assistant for a products table. " +
+        "Use the filter_table tool to answer questions about products. " +
+        "The UI already shows the table, so after the tool runs reply with ONE short " +
+        "sentence and do not repeat the rows. Never invent data.",
+      messages: modelMessages,
+      tools: { filter_table: filterTable },
+      stopWhen: stepCountIs(3), // tool call, then the short reply
+      maxOutputTokens: 400,
     });
 
     result.pipeUIMessageStreamToResponse(res);
   } catch (error) {
-    console.error("Gemini request failed:", error);
-
+    console.error("Request failed:", error);
     if (!res.headersSent) {
       res.status(502).json({ error: "The AI service request failed." });
     }

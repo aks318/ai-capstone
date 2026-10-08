@@ -1,0 +1,76 @@
+/* Styles for the generative UI card. Works on light and dark backgrounds. */
+
+.tool-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.tool-loading {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.tool-error {
+  border-color: #d33;
+  color: #d33;
+}
+
+.tool-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.filter-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(100, 120, 255, 0.18);
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.tool-card-count {
+  opacity: 0.7;
+  font-size: 13px;
+}
+
+.tool-empty {
+  margin: 4px 0;
+  opacity: 0.7;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.tool-card table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tool-card th,
+.tool-card td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  white-space: nowrap;
+}
+
+.tool-card th {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+
+.tool-card td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-card tbody tr:last-child td {
+  border-bottom: none;
+}

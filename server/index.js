@@ -4,6 +4,7 @@ import express from "express";
 import { streamText, convertToModelMessages, tool, stepCountIs } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 
 const PORT = process.env.PORT || 3001;
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001"; // cheapest
@@ -13,6 +14,14 @@ if (!process.env.ANTHROPIC_API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY. Add it to your .env file.");
   process.exit(1);
 }
+
+const chatLimiter = rateLimit({
+  windowMs: 60000, // 1 minute window
+  limit: 10, // 10 requests per IP per minute (older versions call this `max`)
+  standardHeaders: true, // sends RateLimit headers
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please wait a minute and try again." },
+});
 
 // ---------- The data the tool works on (in-memory demo table) ----------
 
@@ -111,8 +120,20 @@ function lastUserText(messages) {
   }
   return "";
 }
+function friendlyServerError(error) {
+  console.error("Stream error:", error);
+  const status = error?.statusCode;
+  if (status === 429)
+    return "Rate limit reached. Please wait a moment and try again.";
+  if (status === 401 || status === 403)
+    return "The server's API key was rejected.";
+  if (status === 400 && /credit balance/i.test(error?.message ?? "")) {
+    return "The AI account is out of credits.";
+  }
+  return "The AI service had a problem. Please try again.";
+}
 
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", chatLimiter, async (req, res) => {
   try {
     const { messages } = req.body ?? {};
 
@@ -122,14 +143,14 @@ app.post("/api/chat", async (req, res) => {
         .json({ error: "messages must be a non-empty array" });
     }
     if (lastUserText(messages).length > MAX_MESSAGE_LENGTH) {
-      return res
-        .status(400)
-        .json({
-          error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters).`,
-        });
+      return res.status(400).json({
+        error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters).`,
+      });
     }
 
     const modelMessages = await convertToModelMessages(messages);
+    const controller = new AbortController();
+    res.on("close", () => controller.abort()); // fires when the browser aborts
 
     const result = streamText({
       model: anthropic(MODEL), // provider function, not a plain string
@@ -142,9 +163,12 @@ app.post("/api/chat", async (req, res) => {
       tools: { filter_table: filterTable },
       stopWhen: stepCountIs(3), // tool call, then the short reply
       maxOutputTokens: 400,
+      abortSignal: controller.signal,
     });
 
-    result.pipeUIMessageStreamToResponse(res);
+    result.pipeUIMessageStreamToResponse(res, {
+      onError: friendlyServerError,
+    });
   } catch (error) {
     console.error("Request failed:", error);
     if (!res.headersSent) {

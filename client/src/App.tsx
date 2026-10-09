@@ -1,11 +1,11 @@
 import "./filter-table.css";
+import "./chat-controls.css";
 import { useChat } from "@ai-sdk/react";
 import { useEffect, useRef, useState } from "react";
 
 const MAX_MESSAGE_LENGTH = 2000;
 
 // ---------- Types for the filter_table tool part ----------
-// This matches what the server's execute() returns.
 
 type FilterTableOutput = {
   columns: string[];
@@ -15,7 +15,6 @@ type FilterTableOutput = {
   matched: number;
 };
 
-// The fields we use from a tool part (the SDK's own type is very generic).
 type ToolPartLike = {
   state: string; // "input-streaming" | "input-available" | "output-available" | "output-error"
   input?: unknown;
@@ -95,15 +94,43 @@ function FilterTableCard({ part }: { part: ToolPartLike }) {
   );
 }
 
+// ---------- Error handling: raw error -> friendly message ----------
+
+function friendlyError(error: Error): string {
+  let message = error.message;
+
+  // For HTTP errors our server returns JSON like {"error":"..."}.
+  try {
+    const parsed = JSON.parse(message);
+    if (typeof parsed?.error === "string") message = parsed.error;
+  } catch {
+    // not JSON, keep the original message
+  }
+
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return "Can't reach the server. Check your connection and try again.";
+  }
+
+  return message || "Something went wrong. Please try again.";
+}
+
 // ---------- The chat app ----------
 
 export default function App() {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const { messages, sendMessage, status, error, stop } = useChat();
+  const { messages, sendMessage, status, error, stop, regenerate, clearError } =
+    useChat({
+      onError: (err) => console.error("Chat error:", err),
+    });
+
+  console.log(messages);
 
   const isBusy = status === "submitted" || status === "streaming";
+
+  const lastMessage = messages[messages.length - 1];
+  const lastIsUser = lastMessage?.role === "user";
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -112,6 +139,11 @@ export default function App() {
   async function submit() {
     const text = input.trim();
     if (!text || isBusy) return;
+
+    if (error) clearError();
+
+    // useChat adds the user message to `messages` immediately (optimistic),
+    // before the server has replied. We just clear the textbox.
     setInput("");
     await sendMessage({ text });
   }
@@ -126,44 +158,88 @@ export default function App() {
       e.preventDefault();
       void submit();
     }
+    if (e.key === "Escape" && isBusy) {
+      stop();
+    }
   }
 
   return (
     <main className="app">
       <h1>AI Chat</h1>
 
-      <section className="messages">
-        {messages.map((message) => (
-          <div key={message.id} className={`message ${message.role}`}>
-            <strong>{message.role === "user" ? "You" : "AI"}</strong>
+      <section className="messages" aria-live="polite">
+        {messages.length === 0 && (
+          <p className="empty-hint">Try: "Show furniture under $300"</p>
+        )}
 
-            <div>
-              {message.parts.map((part, index) => {
-                if (part.type === "text") {
-                  return <span key={index}>{part.text}</span>;
-                }
+        {messages.map((message) => {
+          const isLast = message.id === lastMessage?.id;
 
-                // Map the tool part to a React component.
-                if (part.type === "tool-filter_table") {
-                  return (
-                    <FilterTableCard
-                      key={index}
-                      part={part as unknown as ToolPartLike}
-                    />
-                  );
-                }
+          // Optimistic states of the user's own message
+          const isPending = isLast && lastIsUser && status === "submitted";
+          const isFailed = isLast && lastIsUser && status === "error";
 
-                return null;
-              })}
+          return (
+            <div
+              key={message.id}
+              className={`message ${message.role}${isPending ? " pending" : ""}${isFailed ? " failed" : ""}`}
+            >
+              <strong>{message.role === "user" ? "You" : "AI"}</strong>
+
+              <div>
+                {message.parts.map((part, index) => {
+                  if (part.type === "text") {
+                    return <span key={index}>{part.text}</span>;
+                  }
+
+                  if (part.type === "tool-filter_table") {
+                    return (
+                      <FilterTableCard
+                        key={index}
+                        part={part as unknown as ToolPartLike}
+                      />
+                    );
+                  }
+
+                  return null;
+                })}
+              </div>
+
+              {isPending && (
+                <small className="message-status">Sending...</small>
+              )}
+              {isFailed && (
+                <small className="message-status">Failed to get a reply</small>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {status === "submitted" && <p className="thinking">Thinking...</p>}
         <div ref={bottomRef} />
       </section>
 
-      {error && <p className="error">{error.message}</p>}
+      {status === "error" && error && (
+        <div className="error-banner" role="alert">
+          <span>{friendlyError(error)}</span>
+          <div className="error-actions">
+            <button type="button" onClick={() => void regenerate()}>
+              Retry
+            </button>
+            <button type="button" onClick={clearError}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === "ready" && messages.length > 0 && (
+        <div className="toolbar">
+          <button type="button" onClick={() => void regenerate()}>
+            {lastIsUser ? "Retry" : "Regenerate"}
+          </button>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
         <textarea
@@ -171,7 +247,7 @@ export default function App() {
           maxLength={MAX_MESSAGE_LENGTH}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder='Try: "Show furniture under $300"'
+          placeholder="Ask something... (Enter to send, Esc to stop)"
         />
 
         <button type="submit" disabled={isBusy || !input.trim()}>
@@ -179,7 +255,7 @@ export default function App() {
         </button>
 
         {isBusy && (
-          <button type="button" onClick={stop}>
+          <button type="button" onClick={() => stop()}>
             Stop
           </button>
         )}

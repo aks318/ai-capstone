@@ -1,0 +1,56 @@
+/* Optimistic user message states */
+
+.message.user.pending {
+  opacity: 0.6;
+}
+
+.message.user.failed {
+  border-left: 3px solid #d33;
+  padding-left: 8px;
+}
+
+.message-status {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.7;
+  font-size: 12px;
+}
+
+.message.user.failed .message-status {
+  color: #d33;
+  opacity: 1;
+}
+
+/* Error banner with Retry and Dismiss */
+
+.error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #d33;
+  border-radius: 8px;
+  color: #d33;
+  font-size: 14px;
+}
+
+.error-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Regenerate / Retry button row */
+
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0;
+}
+
+.empty-hint {
+  opacity: 0.6;
+  font-style: italic;
+}
